@@ -6,6 +6,7 @@
 # Last Modified: 08/31/2017
 # Version: 1.1
 # Contact: mpatel5@cdc.gov
+# Deployed: wgListeria (production)
 ##############################################################
 
 # Stdlib imports
@@ -27,6 +28,7 @@ from wgMLST_Client.wgMLSTSchema import Schema
 import xml.etree.cElementTree as ET
 
 # BioNumerics constants
+import bns
 Dlg = bns.Windows.XmlDlgBuilder	
 Database = bns.Database
 Fields = Database.Db.Fields
@@ -39,7 +41,7 @@ GB_PARAMS = {
     'bnparamkey': 'hierarchical_strain_nomenclature',
     'organism': 'LMO',
     'version': '1.0',
-    'scheme': 'Core loci',
+    'scheme': '__Core__',
     'thresholds': (4.050815987,2.914238135,2.046511241,
         1.068159867,0.041631973),
     'minpres': 0.95,
@@ -47,6 +49,7 @@ GB_PARAMS = {
     'instantiated': None,
     'wgst': None,
     'wgmlstname': None,
+    'quality': {'Length':[2.8e6, 3.2e6]},
     'nosave': False,
 }
 
@@ -102,7 +105,7 @@ class WgstDlg( Dlg.Dialogs ):
         self._namesGiven = Dlg.StaticText( str(GB_PARAMS['namesgiven'] ) )
         self._dateInstantiated = Dlg.StaticText( str( GB_PARAMS['instantiated'] ) )
         self._currVersion = Dlg.StaticText( str( GB_PARAMS['version'] ) )
-        self._minPres = Dlg.Input('minpres', tp='float', default=95.0)
+        self._minPres = Dlg.Input('minpres', tp='float', default=95.0, remembersettings=False)
         self._noSaveCheck = Dlg.Check('nosave', '', 
                 remembersettings=False, default = 0, OnChange = self.EnableOptions )
         
@@ -110,10 +113,10 @@ class WgstDlg( Dlg.Dialogs ):
                         ['Organism: ', self._organism ],
                         ['Scheme: ', self._scheme ],
                         ['Current Version: ', self._currVersion ],
-                        ['Date initiated: ', self._dateInstantiated ],
-                        ['WGS Codes issued: ', self._namesGiven ],
-                        ['No save: ', self._noSaveCheck ],
-                        ['Minimum presence: ', Dlg.Cell([[self._minPres, '%']])]
+                        #['Date initiated: ', self._dateInstantiated ],
+                        #['WGS Codes issued: ', self._namesGiven ],
+                        ['Name unsatisfactory: ', self._noSaveCheck ],
+                        ['Core minimum presence: ', Dlg.Cell([[self._minPres, '%']])]
                     ]
         
         simple = Dlg.SimpleDialog( grid, onStart=self.OnStart, onOk=self.OnOk )
@@ -127,7 +130,7 @@ class WgstDlg( Dlg.Dialogs ):
     
     def OnOk( self, args ):
         if self._minPres.Enabled:
-            GB_PARAMS[ 'minpres' ] = (self._minPres.GetValue()/100.0)
+            GB_PARAMS[ 'minpres' ] = (float(self._minPres.GetValue())/100.0)
             GB_PARAMS[ 'nosave' ] = True
 
 class Tree( object ):
@@ -200,13 +203,10 @@ class Tree( object ):
                         part = len(cdcname) - i
                         break
 
-                partialName = self.CDCName( self.GetPart( key, part ) )
-                complete = part == Tree.DEPTH
                 for key in namedNode.GetChildrenKeys():
+                    partialName = self.CDCName( self.GetPart( key, part ) )
+                    complete = part == Tree.DEPTH
                     yield ( key, partialName, complete )
-                    # self._cdcNames[ key ] = self.GetPart( key, part )
-
-        # return self._cdcNames
 
     def GetName( self, key ):
         return self._names.setdefault(key, [])
@@ -243,6 +243,12 @@ class Tree( object ):
             print( name )
 
         return list( map(int, name.split('.') ) )
+
+    def RemoveName(self, key ):
+        location = self._names.get( key, None )
+        if location is not None:
+            self.Traverse( location ).RemoveNamed( key )
+            del self._names[key]
 
     def Save(self, flobj):
         json.dump(self._names, flobj)
@@ -420,7 +426,7 @@ class Node( object ):
 class NamedNode( Node ):
 
     def __init__(self, ID, level, parent ):
-        super().__init__( ID, level, parent )
+        super(self.__class__, self).__init__( ID, level, parent )
         self._wgst = self.RTraverse()[-1::-1]
 
     def AddChild(self, key):
@@ -451,8 +457,12 @@ class AlleleCalls( object ):
         json_bytes = flobj.read()
         json_str = json_bytes.decode( 'utf-8' )
         self._alleleCalls = json.loads( json_str )
+        for key in self._alleleCalls:
+            self._alleleCalls[key] = np.asarray(self._alleleCalls[key], dtype=int)
 
     def Save( self, flobj ):
+        for key in self._alleleCalls:
+            self._alleleCalls[key] = list(self._alleleCalls[key])
         json_str = json.dumps(self._alleleCalls )
         json_bytes = json_str.encode( 'utf-8' )
         flobj.write(json_bytes)
@@ -554,9 +564,13 @@ class Calculator(object):
         self._scheme = GB_PARAMS['scheme']
         self._minPres = GB_PARAMS['minpres']
         self._thresholds = list( GB_PARAMS['thresholds'] )
+        self._qualityRanges = GB_PARAMS['quality']['Length']
         self._datadir = runtimeArgs['dirpath']
         self._treepath = runtimeArgs['tree']
         self._callspath = runtimeArgs['allele calls']
+
+        self._charNrs = [ self._exper.FindChar( char ) for char in \
+            self._exper.ViewGet( self._scheme ).GetCharacters() ]
 
         self._tree = Tree( len( self._thresholds ) )
         self._alleleCalls = AlleleCalls()
@@ -566,21 +580,34 @@ class Calculator(object):
 
     def DoCalc( self, args ):
 
-        def RetrieveAlleleCalls(entryExper, charNrs):
+        def CheckCore(entryExper):
             
             charVals = []
             charPresences = []
             entryExper.LoadOrCreate().GetData(charVals, charPresences)
 
             # How much is present?
-            present = sum( charPresences[i] for i in charNrs )
-            if float(present) / float(len(charNrs)) < self._minPres:
+            present = sum( charPresences[i] for i in self._charNrs )
+            if round(float(present) / float(len(self._charNrs)),2) < self._minPres:
                 return None
 
             else:
-                eCalls = np.asarray( [charVals[i] for i in charNrs] )
+                eCalls = np.asarray( [charVals[i] for i in self._charNrs] )
                 eCalls.flags.writeable = False
                 return eCalls
+
+        def CheckLength(entryExper):
+
+            cs = entryExper.LoadOrCreate()
+            seqLength = cs.GetVal( cs.FindName( 'Length' ) )
+
+            if seqLength >= max( self._qualityRanges ) or \
+                seqLength < min( self._qualityRanges ):
+                
+                return False
+
+            else:
+                return True
 
         def SaveSettings():
             settings = ET.Element( GB_PARAMS['bnparamkey'] )
@@ -602,10 +629,6 @@ class Calculator(object):
 
         # Tell them what we're doing
         comm.SetMessage("Retrieving view: {}".format( self._scheme ) )
-
-        # Get the characters in the defined scheme:
-        charNrs = [ self._exper.FindChar( char ) for char in \
-            self._exper.ViewGet( self._scheme ).GetCharacters() ]
         
         # Load our data into memory
         if not os.path.isdir( self._treepath ):
@@ -630,7 +653,8 @@ class Calculator(object):
 
         # Get all the current names
         namedEntries = list( self._tree.GetNames() )
-        belowQC = set()
+        belowQC = defaultdict(list)
+        selection = set()
         
         # Time to assign names:
         comm.SetMessage( 'Calculating and assigning WGS codes' )
@@ -643,30 +667,70 @@ class Calculator(object):
             # Let's get the experiment
             entryExper = Database.Experiment( entry, 
                 GB_PARAMS['wgmlstname'] )
+
+            # Let's get the quality experiment
+            qualityExper = Database.Experiment( entry,
+                'quality' )
+
+            # add to selection tracker
+            selection.add( entry.Key )
             
             # Let's skip if it doesn't have allele calls
-            if not entryExper.IsPresent():
+            if not entryExper.IsPresent() or \
+                not qualityExper.IsPresent():
                 continue
+
+            qcFail = False
 
             # Check to see if we have a name
             if self._tree.HasName( entry.Key ):
                 if not self._alleleCalls.HasKey( entry.Key ):
-                    eCalls = RetrieveAlleleCalls( entryExper, charNrs )
-                    if eCalls is not None:
-                        self._alleleCalls.Add( key, eCalls )
-                    else:
+                    seqQC = CheckLength( qualityExper )
+
+                    if not seqQC:
                         logger._log(
-                            'Entry: {} has WGS code, but is below'
-                            'the {} presence cutoff'.format( 
-                                                entry.Key, self._minPres ))
+                            'Entry: {} has WGS code, but does not '
+                            'have an acceptable sequence length'.format(
+                                entry.Key ))
+
+                        logger._log( 'Removing entry: {}'.format(
+                            entry.Key ))
+
+                        self._tree.RemoveNamed( entry.Key )
+
+                    else:
+                        eCalls = CheckCore( entryExper )
+                        if eCalls is not None:
+                            self._alleleCalls.Add( key, eCalls )
+                        else:
+                            logger._log(
+                                'Entry: {} has WGS code, but is below'
+                                'the {} presence cutoff'.format( 
+                                                    entry.Key, self._minPres ))
+
+                            logger._log( 'Removing entry: {}'.format(
+                                entry.Key ))
+
+                        self._tree.RemoveNamed( entry.Key )
+
                 continue
 
+            # Check sequence length:
+            seqLen = CheckLength( qualityExper )
+
             # Get the allele calls
-            eCalls = RetrieveAlleleCalls( entryExper, charNrs )
+            eCalls = CheckCore( entryExper )
 
             # Continue if we are below QC threshold
             if eCalls is None:
-                belowQC.add( entry.Key )
+                belowQC[entry.Key].append('CORE')
+                qcFail = True
+
+            if not seqLen:
+                belowQC[entry.Key].append('LENGTH')
+                qcFail = True
+
+            if qcFail:
                 continue
             else:
                 self._alleleCalls.Add( entry.Key , eCalls )
@@ -688,31 +752,61 @@ class Calculator(object):
             comm.SetMessage( 'Saving codes to your desktop' )
             import csv
             
-            PATH = os.path.expanduser( '~/Desktop' )
+            PATH = os.path.normpath( os.path.expanduser( '~/Desktop' ) )
             FILE_NAME = 'wgs_code_calculation-{}.csv'.format( 
                 datetime.now().strftime("%m-%d-%y@%H-%M-%S") )
             FILE_PATH = os.path.join( PATH, FILE_NAME )
             
             with open( FILE_PATH, 'wb' ) as f:
                 writer = csv.writer( f )
-
+                writer.writerow(['Key', 'WGST', 'UploadDate'])
+                
                 for key, value, complete in self._tree.FinalizeCDCNames():
-                    writer.writerow( [key, value] )
+                    if key in selection:
+                        writer.writerow( [key, value, Database.EntryField(key, 'uploaddate').Content] )
 
                 for key in belowQC:
-                    writer.writerow( [key, 'FAILED QC'] )
+                    if key in selection:
+                        criteria = ' , '.join( belowQC[key] )
+                        writer.writerow( [key, 'FAILED QC: {}'.format( criteria ) ] )
+
         else:
             comm.SetMessage( 'Saving codes to the database' )
+            
+            # Number of names given
             namesGiven = 0
+
+            # For each key
             for key, name, complete in self._tree.FinalizeCDCNames():
 
-                Database.EntryField( key, GB_PARAMS['wgst'] ).Content = name
+                # Check if the current name is different
+                currName = Database.EntryField( key, GB_PARAMS['wgst'] ).Content
+
+                if currName != name:
+                    attachment = '{0} -> {1}: {2}\n'.format( 
+                        currName, name, datetime.now().strftime( "%m-%d-%y" ) )
+
+                    found = False
+                    for flat in Database.Entry(key).GetAttachmentList():
+                        if flat['Name'] == 'WGS Code':
+                            flat['Attach'].Content += attachment
+                            found = True
+                            break
+
+                    if not found:
+                        Database.Entry(key).AddAttachmentFlatText(attachment, saveInRecord=True,
+                            name='WGS Code', description='WGS Code Change' )
+
+                
+                    Database.EntryField( key, GB_PARAMS['wgst'] ).Content = name
 
                 if complete:
                     namesGiven += 1
 
             for key in belowQC:
-                Database.EntryField( key, GB_PARAMS['wgst'] ).Content = 'FAILED QC'
+                criteria = ' , '.join( belowQC[key] )
+                Database.EntryField( key, GB_PARAMS['wgst'] ).Content = \
+                    'FAILED QC: {}'.format( criteria )
 
             Database.Db.Fields.Save()
             GB_PARAMS['namesgiven'] = namesGiven
@@ -745,7 +839,13 @@ class Calculator(object):
 
                 with open( FILE_PATH, 'wb' ) as f:
                     self._tree.Save( f )
+        
+        # Inform the user
+        MessageBox('', 'Successfully assigned WGS Codes', '')
 
+        # Open the file if there is a no save:
+        if GB_PARAMS['nosave']:
+            os.startfile( FILE_PATH )
 
 def Setup( **kwargs ):
 
@@ -767,6 +867,7 @@ def Setup( **kwargs ):
         'instantiated': str,
         'wgst': str,
         'wgmlstname': str,
+        'quality': leval,
         'nosave': leval
     }
 
@@ -780,13 +881,42 @@ def Setup( **kwargs ):
         settings = ET.Element( GB_PARAMS['bnparamkey'] )
 
         for setting in GB_PARAMS:
-            ET.SubElement( settings, setting ).text = str( GB_PARAMS[setting] )
+            ET.SubElement( settings, setting ).text = \
+                str( GB_PARAMS[setting] )
 
         settings = bns.Database.Db.Info.SaveSetting(
             GB_PARAMS['bnparamkey'], 
             ET.tostring( settings ), 
             True
         )
+
+    def NewSettings( setting ):
+
+        # Let's make sure at least something is provided:
+        if GB_PARAMS.get( setting, None ) is None:
+            raise RuntimeError('You cannot provide a new setting'
+                ' and say nothing about what it is' )
+
+        # Check if it's an experiment type:
+        if setting in Database.Db.ExperimentTypes:
+            cst = Characters.CharSetType(setting)
+
+            if isinstance( GB_PARAMS[setting], dict ):
+
+                for char, value in GB_PARAMS[setting].items():
+                    if cst.FindChar( char ) < 0:
+                        raise RuntimeError('Gave an invalid char: {0} criteria '
+                            'for setting: {1}'.format( char, setting ))
+
+            elif isinstance( GB_PARAMS[setting], str ):
+
+                if cst.FindChar( char ) < 0:
+                    raise RuntimeError('Gave an invalid char: {0} criteria '
+                        'for setting: {1}'.format( char, setting ))
+            else:
+
+                raise RuntimeError( 'Do not know what to do with'
+                    ' type of setting: {}'.format(type(GB_PARAMS[setting])))
 
     def SearchSettings():
         """
@@ -809,6 +939,8 @@ def Setup( **kwargs ):
 
                 if val is not None:
                     GB_PARAMS[setting] = GB_PARAMS_OPS[setting](val.text)
+                else:
+                    NewSettings( setting )
 
             logger._log('Successfully loaded settings')
 
@@ -985,9 +1117,6 @@ def Run( runtimeArgs ):
     bns.Windows.BnsWindow(winID).StartAsyncCalculation(
             calc.DoCalc, calc.DoRefresh, async=False )
 
-    # Inform the user
-    MessageBox('', 'Successfully assigned WGS Codes', '')
-
 def Main( args ):
 
     # The logger!!
@@ -1009,8 +1138,7 @@ def Main( args ):
     except:
         e = traceback.format_exc()
         logger._log( e )
-        MessageBox( 'Error', 'There was an error during excecution'
-            ' please check the log file', '' )
+        MessageBox( 'Error', e, '' )
     
     finally:
         logger._save()
