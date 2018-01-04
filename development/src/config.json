@@ -1,0 +1,38 @@
+{
+    "organisms": {
+        "listeria": {
+            "shorthand": "lmo",
+            "default_scheme": "core",
+            "schemes": {
+                "core": {
+                    "loci": 1748,
+                    "presence": 0.95
+                },
+                "whole": {
+                    "loci": 4804,
+                    "presence": 0.5
+                }
+            }
+        },
+        "salmonella": {
+            "shorthand": "saen",
+            "default_scheme": "whole",
+            "schemes": {
+                "whole": {
+                    "loci": 11636
+                }
+            }
+        },
+        "ecoli" : {
+            "shorthand": "ec",
+            "default_scheme": "core",
+            "schemes": {
+                "core": {
+                    "loci": 2513,
+                    "presence": 0.95
+                }
+
+            }
+        }
+    }
+}
