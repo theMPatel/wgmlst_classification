@@ -1,15 +1,19 @@
 ##############################################################
 # Nomenclature naming script
-# Author: Hannes Pouseele, Milan Patel
+# Author: Milan Patel
 # Last Modified: 08/16/2017
 # Version: 2.0
 # Contact: hannes_pouseele@applied-maths.com, mpatel5@cdc.gov
 ##############################################################
+
 import os
 import sys
 from datetime import datetime
 from collections import defaultdict
 from queue import PriorityQueue
+from copy import deepcopy
+from itertools import combinations
+
 import pickle
 import time
 
@@ -19,7 +23,11 @@ import random
 import numpy as np
 
 from wgst.database import Database
+from wgst.distance_matrix import DistMatrix
+
 from .tree import *
+from .cost import *
+
 from tqdm import *
 
 # ======================== DISTANCE FUNCTION ================================#
@@ -157,10 +165,42 @@ class WgstHistory(object):
 
                 oArray.extend( tmp )
 
-            writer.writerows( oArray )
+            writer.writerows(oArray)
 
 #=========================== NAMING FUNCTION ================================#
-def CalcName(named, tree, unNamedEntry, distances, thresholds ):
+def CalcName(named, tree, unNamedEntry, distances, thresholds, 
+    distance_matrix ):
+
+    
+    def valid_merge(level, merge_list, node):
+
+        keys_to_merge = []
+        for child in merge_list:
+            for named in node.GetChild(child).DFSNamed():
+                keys_to_merge.append(key for key in named.GetChildrenKeys())
+
+        cost = mean_inter_error(
+            unNamedEntry,
+            keys_to_merge,
+            distance_matrix,
+            thresholds,
+            level
+            )
+
+        return cost
+
+    def merge_cost(node, level):
+        # Get the merge cost for this node and this level
+        key_list = [isolate for named in node.DFSNamed() for isolate \
+            in named.GetChildrenKeys()]
+
+        return mean_error(
+            unNamedEntry,
+            key_list,
+            distance_matrix,
+            thresholds,
+            level
+            )
 
     # Make sure thresholds are sorted biggest first
     thresholds.sort(key=lambda x: -x)
@@ -197,24 +237,90 @@ def CalcName(named, tree, unNamedEntry, distances, thresholds ):
         # There's no way it will be similar at the lower
         # levels, let's remove those
         for index in reversed(toRemove):
-            del distances[ index ]
+            del distances[index]
 
         # Assigned to only one cluster
         if len( closestClusters ) == 1:
             pattern = closestClusters.pop()
-            patternName.append( pattern[-1] )
-            currentNode = headNode.Traverse( pattern )
+
+            cost = merge_cost(
+                currentNode.GetChild(pattern[-1]),
+                level
+            )
+
+            if cost <= ABSOLUTE_MARGIN_ERROR:
+                patternName.append( pattern[-1] )
+                currentNode = headNode.Traverse( pattern )
+
+            else:
+                currentNode = currentNode.NewChildNode()
+                patternName.append(currentNode.ID())
+                distances = []
 
         # New cluster!
-        elif len( closestClusters ) == 0:
+        elif len(closestClusters) == 0:
             currentNode = currentNode.NewChildNode()
-            patternName.append( currentNode.ID() )
+            patternName.append(currentNode.ID())
 
         # Merge time:
         else:
             toMerge =[ c[-1] for c in closestClusters ]
-            currentNode = currentNode.MergeNodes( toMerge )
-            patternName.append( currentNode.ID() )
+
+            if valid_merge(level, toMerge, currentNode) <= ABSOLUTE_MARGIN_ERROR:
+                currentNode = currentNode.MergeNodes( toMerge )
+                patternName.append( currentNode.ID() )
+
+            else:
+                best_merges = []
+
+                for i in range(len(toMerge), 0, -1):
+
+                    for combo in combinations(toMerge, i):
+
+                        cost_here = valid_merge(level, combo, currentNode)
+
+                        if cost_here > ABSOLUTE_MARGIN_ERROR:
+                            continue
+
+                        best_merges.append([combo, cost_here])
+
+                best_merges = filter(
+                    lambda x: x[1]<=ABSOLUTE_MARGIN_ERROR,
+                    best_merges
+                )
+
+
+                if not len(best_merges):
+                    currentNode = currentNode.NewChildNode()
+                    patternName.append(currentNode.ID())
+                    
+                    distances = []
+
+                else:
+                    best_merges.sort(key=lambda x: x[1])
+                    best_case = best_merges[0]
+
+                    if len(best_case[0]) > 1:
+                        currentNode = currentNode.MergeNodes(best_case[0])
+                        patternName.append(currentNode.ID())
+                    else:
+                        patternName.append(best_case[0][0])
+                        currentNode = headNode.Traverse(patternName)
+
+
+
+                    for cluster in best_case[0]:
+                        toMerge.remove(cluster)
+
+                    to_remove = []
+                    for i in range(len(distances)):
+                        key = named[distances[i][1]]
+                        if tree.GetPart(key, level)[-1] in toMerge:
+                            to_remove.append(i)
+
+                    for rm in reversed(to_remove):
+                        del distances[rm]
+
 
     assert isinstance( currentNode, NamedNode )
 
@@ -251,6 +357,7 @@ class Calculator(object):
     def DoValidation(self):
 
         self._tree = Tree(len(self._thresholds))
+        self._distancematrix = DistMatrix()
         
         # Create starting and adding sets return the updated Names object to track history
         self._startingSet, addingSet = self._entryBase.CreateSubset()
@@ -288,8 +395,13 @@ class Calculator(object):
             if entry._key in namedEntries:
                 continue
             
-            #calculate the distance between the unnamed sample and all the named samples
+            # This is for the naming logic
             dists = []
+
+            # Add the information for the distance_matrix
+            dm_list = []
+            
+            #calculate the distance between the unnamed sample and all the named samples
             for i in range(len(namedEntries)):
                 dist = GetDistance( entry._allelecalls,
                     self._entryBase.GetEntry(namedEntries[i])._allelecalls )
@@ -297,12 +409,13 @@ class Calculator(object):
                 if dist <= self._thresholds[0]:
                     dists.append((dist, i))
 
-            # dists = [ GetDistance( 
-            #     entry._allelecalls, 
-            #     self._entryBase.GetEntry( e )._allelecalls ) for e in namedEntries ]
+                dm_list.append(dist)
+
+            self._distancematrix.add(entry._key, dm_list)
             
             #calculate the name of the entry
-            CalcName( namedEntries, tree, entry._key, dists, self._thresholds )
+            CalcName( namedEntries, tree, entry._key, dists, self._thresholds,
+                self._distancematrix)
             
             #keep track of the data
             if tree.HasName( entry._key ) and entry._key not in namedEntries:
