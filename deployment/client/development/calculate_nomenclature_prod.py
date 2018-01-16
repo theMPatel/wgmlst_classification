@@ -6,7 +6,7 @@
 # Last Modified: 08/31/2017
 # Version: 1.1
 # Contact: mpatel5@cdc.gov
-# Deployed: wgListeria (production)
+# P.S.: Steven Stroika is awesome!
 ##############################################################
 
 # Stdlib imports
@@ -29,7 +29,7 @@ import xml.etree.cElementTree as ET
 
 # BioNumerics constants
 import bns
-Dlg = bns.Windows.XmlDlgBuilder	
+Dlg = bns.Windows.XmlDlgBuilder 
 Database = bns.Database
 Fields = Database.Db.Fields
 MessageBox  = bns.Util.Program.MessageBox
@@ -66,6 +66,7 @@ class Logger(object):
     CURRENT = None
 
     def __init__(self, logDir):
+        
         path = [
             '{}_nomenclature_srcfiles'.format( 
             GB_PARAMS['organism'] ),
@@ -73,27 +74,61 @@ class Logger(object):
             'wgst_log_{}.txt'.format( 
                 datetime.now().strftime("%m-%d-%y@%H-%M-%S"))
              ]
+        
         self._fileName = os.path.join( logDir, *path )
-        self._logStr = ''
+        self._filehandle = open(self._fileName, 'w')
+        
         Logger.CURRENT = self
 
-    def _log(self, outStr):
-        if not isinstance(outStr, str):
+    def _makelogstr(self, string, depth):
+        if not isinstance(string, basestring):
             
             try:
-                self._logStr += str(outStr) + '\n'
+                to_write = str(string) + '\n'
 
             except:
-                e = traceback.format_exc()
-                self._logStr += e + '\n'
+                to_write = traceback.format_exc() + '\n'
+                return '->{}'.format(''.join(
+                    ['\t']*depth)) + to_write
+
+            else:
+                return '->{}'.format(''.join(
+                    ['\t']*depth)) + to_write
 
         else:
-            self._logStr += outStr + '\n'
+            return '->{}'.format(''.join(
+                ['\t']*depth)) + string
 
-    def _save(self):
+    def _log(self, outstr, depth=0):
+        self._filehandle.write(
+            self._makelogstr(outstr, depth)
+        )
 
-        with open(self._fileName, 'w') as f:
-            f.write( self._logStr)
+    @classmethod
+    def log(cls, outstr):
+
+        if not hasattr(cls, 'CURRENT'):
+            raise RuntimeError('Logging error')
+
+        if cls.CURRENT is None:
+            raise RuntimeError('Logger class has not been initialized'
+                ' you cannot log anything')
+
+        cls.CURRENT._log(outstr)
+
+    @classmethod
+    def close(cls):
+
+        if not hasattr(cls, 'CURRENT'):
+            return
+
+        if cls.CURRENT is None:
+            return
+        
+        try:
+            cls.CURRENT._filehandle.close()
+        except:
+            return
 
 class WgstDlg( Dlg.Dialogs ):
     
@@ -224,7 +259,7 @@ class Tree( object ):
         return key in self._names
 
     def Load(self, flobj):
-        database = json.load( flobj )
+        database = json.load( flobj, encoding='cp1252' )
         assert isinstance( database, dict )
         self._names.update( database )
 
@@ -251,7 +286,7 @@ class Tree( object ):
             del self._names[key]
 
     def Save(self, flobj):
-        json.dump(self._names, flobj)
+        json.dump(self._names, flobj, encoding='cp1252')
 
     def Traverse( self, ids ):
         assert( isinstance( ids, tuple ) or \
@@ -455,17 +490,18 @@ class AlleleCalls( object ):
 
     def Load( self, flobj ):
         json_bytes = flobj.read()
-        json_str = json_bytes.decode( 'utf-8' )
-        self._alleleCalls = json.loads( json_str )
+        # json_str = json_bytes.decode( 'utf-8' )
+        self._alleleCalls = json.loads( json_bytes, encoding='cp1252')
         for key in self._alleleCalls:
             self._alleleCalls[key] = np.asarray(self._alleleCalls[key], dtype=int)
 
     def Save( self, flobj ):
         for key in self._alleleCalls:
             self._alleleCalls[key] = list(self._alleleCalls[key])
-        json_str = json.dumps(self._alleleCalls )
-        json_bytes = json_str.encode( 'utf-8' )
-        flobj.write(json_bytes)
+
+        json_str = json.dumps(self._alleleCalls, encoding='cp1252')
+        # json_bytes = json_str.encode( 'utf-8' )
+        flobj.write(json_str)
 
     def Add( self, key, calls ):
         self._alleleCalls[ key ] = calls
@@ -578,6 +614,30 @@ class Calculator(object):
     def DoRefresh( self, args ):
         pass
 
+    def RunCalc(self, args):
+
+        try:
+            lockfile_path = os.path.join(
+                DATA_DIR,
+                os.path.join( DATA_DIR,
+                '{}_nomenclature_srcfiles'.format( GB_PARAMS['organism'] ) ),
+                'nomenclature.lock'
+                )
+
+            self.DoCalc(args)
+
+        except:
+            e = traceback.format_exc()
+            Logger.log(e)
+            MessageBox('', 'There was an error', '')
+            bns.Stop()
+
+        else:
+            os.remove(lockfile_path)
+
+        finally:
+            Logger.close()
+
     def DoCalc( self, args ):
 
         def CheckCore(entryExper):
@@ -624,32 +684,40 @@ class Calculator(object):
         # Will be used for the progress bar
         comm = args.get('communication', bns.Windows.CalcCommunication() )
 
-        # Log function
-        logger = Logger.CURRENT
-
         # Tell them what we're doing
         comm.SetMessage("Retrieving view: {}".format( self._scheme ) )
-        
+        Logger.log('Retrieving view: {}'.format(self._scheme))
+
         # Load our data into memory
         if not os.path.isdir( self._treepath ):
             comm.SetMessage( "Loading current tree" )
+            Logger.log('Loading current tree')
+
             with open( self._treepath, 'rb' ) as f:
                 self._tree.Load( f )
+            Logger.log('Tree loaded successfully', depth=1)
 
         if not os.path.isdir( self._callspath ):
             comm.SetMessage( "Loading historical allele calls")
+            Logger.log('Loading historical allele calls')
+
             with gzip.open( self._callspath, 'rb' ) as f:
                 self._alleleCalls.Load( f )
+            Logger.log('Successfully loaded allele calls', depth=1)
 
         # Check to make sure the tree and allele calls file match
         comm.SetMessage( "Checking data integrity")
+        Logger.log('Checking data integrity')
         if not len( self._alleleCalls ) >= len( self._tree ):
             raise AssertionError('Fatal error, we are missing allele calls'
                 'for keys that have WGS codes in srcfiles' )
+        Logger.log('Successfully checked data integrity', depth=1)
 
         # Build the tree
         comm.SetMessage( "Building tree" )
+        Logger.log('Building tree')
         self._tree.BuildTree()
+        Logger.log('Built tree', depth=1)
 
         # Get all the current names
         namedEntries = list( self._tree.GetNames() )
@@ -658,7 +726,10 @@ class Calculator(object):
         
         # Time to assign names:
         comm.SetMessage( 'Calculating and assigning WGS codes' )
-
+        
+        Logger.log('Beginning calculation at {}'.format(
+            datetime.now().strftime('%H-%M-%S')))
+        
         nSelected = len( Database.Db.Selection )
         for i, entry in enumerate( Database.Db.Selection ):
             
@@ -688,30 +759,30 @@ class Calculator(object):
                     seqQC = CheckLength( qualityExper )
 
                     if not seqQC:
-                        logger._log(
+                        Logger.log(
                             'Entry: {} has WGS code, but does not '
                             'have an acceptable sequence length'.format(
                                 entry.Key ))
 
-                        logger._log( 'Removing entry: {}'.format(
-                            entry.Key ))
+                        # Logger.log( 'Removing entry: {}'.format(
+                        #     entry.Key ))
 
-                        self._tree.RemoveNamed( entry.Key )
+                        # self._tree.RemoveNamed( entry.Key )
 
                     else:
                         eCalls = CheckCore( entryExper )
                         if eCalls is not None:
                             self._alleleCalls.Add( key, eCalls )
                         else:
-                            logger._log(
+                            Logger.log(
                                 'Entry: {} has WGS code, but is below'
                                 'the {} presence cutoff'.format( 
                                                     entry.Key, self._minPres ))
 
-                            logger._log( 'Removing entry: {}'.format(
-                                entry.Key ))
+                        #     Logger.log( 'Removing entry: {}'.format(
+                        #         entry.Key ))
 
-                        self._tree.RemoveNamed( entry.Key )
+                        # self._tree.RemoveNamed( entry.Key )
 
                 continue
 
@@ -871,8 +942,6 @@ def Setup( **kwargs ):
         'nosave': leval
     }
 
-    logger = Logger.CURRENT
-
     def CreateSettings():
         """
         Create the settings within BN and save it
@@ -930,7 +999,7 @@ def Setup( **kwargs ):
 
         if dbSettings:
 
-            logger._log('Found BioNumerics settings')
+            Logger.log('Found BioNumerics settings')
 
             root = ET.fromstring( dbSettings )
 
@@ -942,11 +1011,11 @@ def Setup( **kwargs ):
                 else:
                     NewSettings( setting )
 
-            logger._log('Successfully loaded settings')
+            Logger.log('Successfully loaded settings')
 
         else:
 
-            logger._log( 'Did not find settings, using default')
+            Logger.log( 'Did not find settings, using default')
 
             # Check to make sure the field exists:
             if len( Fields ) < 1:
@@ -981,7 +1050,7 @@ def Setup( **kwargs ):
 
             CreateSettings()
 
-            logger._log('Sucessfully created settings')
+            Logger.log('Sucessfully created settings')
 
     def ValidateDirectories():
 
@@ -989,7 +1058,7 @@ def Setup( **kwargs ):
             '{}_nomenclature_srcfiles'.format( GB_PARAMS['organism'] ) )
 
         if not os.path.isdir( DIR_PATH ):
-            logger._log( 'Organism sourcedir does not exist' )
+            Logger.log( 'Organism sourcedir does not exist' )
 
             os.mkdir( DIR_PATH )
 
@@ -1005,14 +1074,14 @@ def Setup( **kwargs ):
                         directory )
 
                 if not os.path.exists( path ):
-                    logger._log('Path: {} did not exist'.format(
+                    Logger.log('Path: {} did not exist'.format(
                         path ))
 
                     os.mkdir( path )
 
         RUNTIME_ARGS['dirpath'] = DIR_PATH
 
-        logger._log('Sucessfully validated directories')
+        Logger.log('Sucessfully validated directories')
 
     def ValidateSrcFiles():
 
@@ -1039,7 +1108,7 @@ def Setup( **kwargs ):
                 OUT_FILE = os.path.join( path, os.path.basename( PATH_FILES[0] ))
 
                 # Back, back, back it up!
-                logger._log( 'Writing to disk' )
+                Logger.log( 'Writing to disk' )
                 
                 # This is cheating, but it works for now
                 if IN_FILE.endswith( '.gzip' ):
@@ -1055,7 +1124,7 @@ def Setup( **kwargs ):
                         
                         shutil.copyfileobj( f_in, f_out )
 
-                logger._log( 'Successfully backed up: {}'.format(
+                Logger.log( 'Successfully backed up: {}'.format(
                     IN_FILE ))
 
                 return IN_FILE
@@ -1072,7 +1141,7 @@ def Setup( **kwargs ):
                         'file in: {}'.format( path ) )
 
                 else:
-                    logger._log( 
+                    Logger.log( 
                                 'Initializing path: {} '
                                 'for organism: {}'.format(
                                     path, 
@@ -1094,7 +1163,7 @@ def Setup( **kwargs ):
         # For each file, back it up
         for file, path in files.items():
             
-            logger._log('Backing up if possible: {}'.format( path ) )
+            Logger.log('Backing up if possible: {}'.format( path ) )
 
             # Set the runtime arguments
             RUNTIME_ARGS[file] = Backup( path )
@@ -1115,14 +1184,31 @@ def Run( runtimeArgs ):
 
     # Run the calculation
     bns.Windows.BnsWindow(winID).StartAsyncCalculation(
-            calc.DoCalc, calc.DoRefresh, async=False )
+            calc.RunCalc, calc.DoRefresh, async=False )
 
 def Main( args ):
 
     # The logger!!
-    logger = Logger(DATA_DIR)
+    Logger(DATA_DIR)
 
     try:
+
+        lockfile_path = os.path.join(
+                DATA_DIR,
+                os.path.join( DATA_DIR,
+                '{}_nomenclature_srcfiles'.format( GB_PARAMS['organism'] ) ),
+                'nomenclature.lock'
+                )
+
+        if os.path.exists(lockfile_path):
+            Logger.log('Lockfile was present on run')
+                
+            raise RuntimeError( 'Someone is running this already OR'
+                ' there was an error in the previous run')
+
+        else:
+            with open(lockfile_path, 'w') as f:
+                pass
 
         # Let's set ourselves up for success!
         runtimeArgs = Setup()
@@ -1137,11 +1223,11 @@ def Main( args ):
 
     except:
         e = traceback.format_exc()
-        logger._log( e )
+        Logger.log( e )
         MessageBox( 'Error', e, '' )
-    
-    finally:
-        logger._save()
+        Logger.close()
+
+
 
 if __name__ == '__main__':
 
