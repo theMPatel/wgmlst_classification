@@ -6,7 +6,7 @@
 # Last Modified: 08/31/2017
 # Version: 1.1
 # Contact: mpatel5@cdc.gov
-# P.S.: Steven Stroika is awesome!
+# Deployed: wgListeria (production)
 ##############################################################
 
 # Stdlib imports
@@ -89,24 +89,23 @@ class Logger(object):
             except:
                 to_write = traceback.format_exc() + '\n'
                 return '->{}'.format(''.join(
-                    ['\t']*depth)) + to_write
+                    ['\t']*depth) + to_write)
 
             else:
                 return '->{}'.format(''.join(
-                    ['\t']*depth)) + to_write
+                    ['\t']*depth) + to_write)
 
         else:
             return '->{}'.format(''.join(
-                ['\t']*depth)) + string
+                ['\t']*depth) + string)
 
-    def _log(self, outstr, depth=0):
+    def _log(self, outstr, depth):
         self._filehandle.write(
             self._makelogstr(outstr, depth)
         )
 
     @classmethod
-    def log(cls, outstr):
-
+    def log(cls, outstr, depth=0):
         if not hasattr(cls, 'CURRENT'):
             raise RuntimeError('Logging error')
 
@@ -114,11 +113,10 @@ class Logger(object):
             raise RuntimeError('Logger class has not been initialized'
                 ' you cannot log anything')
 
-        cls.CURRENT._log(outstr)
+        cls.CURRENT._log(outstr, depth)
 
     @classmethod
     def close(cls):
-
         if not hasattr(cls, 'CURRENT'):
             return
 
@@ -145,17 +143,15 @@ class WgstDlg( Dlg.Dialogs ):
                 remembersettings=False, default = 0, OnChange = self.EnableOptions )
         
         grid = [
-                        ['Organism: ', self._organism ],
-                        ['Scheme: ', self._scheme ],
-                        ['Current Version: ', self._currVersion ],
-                        #['Date initiated: ', self._dateInstantiated ],
-                        #['WGS Codes issued: ', self._namesGiven ],
-                        ['Name unsatisfactory: ', self._noSaveCheck ],
-                        ['Core minimum presence: ', Dlg.Cell([[self._minPres, '%']])]
-                    ]
+                    ['Organism: ', self._organism ],
+                    ['Scheme: ', self._scheme ],
+                    ['Current Version: ', self._currVersion ],
+                    ['Name unsatisfactory: ', self._noSaveCheck ],
+                    ['Core minimum presence: ', Dlg.Cell([[self._minPres, '%']])]
+                ]
         
         simple = Dlg.SimpleDialog( grid, onStart=self.OnStart, onOk=self.OnOk )
-        self.AddSimpleDialog('Issue WGS Codes', simple )
+        self.AddSimpleDialog('Issue Allele Codes', simple )
 
     def EnableOptions(self, args):
         self._minPres.Enabled = not self._minPres.Enabled
@@ -183,7 +179,14 @@ class Tree( object ):
 
     def BuildTree( self ):
         lengthMismatch = 0
+        non_existant_keys = set()
+
         for key, address in self._names.items():
+
+            if not self.check_bns_key(key):
+                non_existant_keys.add(key)
+                continue
+
             if len( address ) == Tree.DEPTH:
                 
                 currentNode = self._tree
@@ -212,6 +215,12 @@ class Tree( object ):
 
         if lengthMismatch > 0:
             pass
+
+        for key in non_existant_keys:
+            self.RemoveNamed(key)
+
+    def check_bns_key(self, key):
+        return bns.Database.Entry(key).DispName != '<Not present>'
 
     def CDCName(self, part):
         if not isinstance( part, list ):
@@ -282,7 +291,15 @@ class Tree( object ):
     def RemoveName(self, key ):
         location = self._names.get( key, None )
         if location is not None:
-            self.Traverse( location ).RemoveNamed( key )
+
+            named_node = self.Traverse(location)
+
+            if not isinstance(named_node, NamedNode):
+                raise RuntimeError('Have partial key'
+                    ' for which logic requested removal')
+
+            named_node.RemoveNamed(key)
+
             del self._names[key]
 
     def Save(self, flobj):
@@ -620,7 +637,7 @@ class Calculator(object):
             lockfile_path = os.path.join(
                 DATA_DIR,
                 os.path.join( DATA_DIR,
-                '{}_nomenclature_srcfiles'.format( GB_PARAMS['organism'] ) ),
+                '{}_nomenclature_srcfiles'.format( GB_PARAMS['organism'] )),
                 'nomenclature.lock'
                 )
 
@@ -959,7 +976,7 @@ def Setup( **kwargs ):
             True
         )
 
-    def NewSettings( setting ):
+    def NewSettings(setting):
 
         # Let's make sure at least something is provided:
         if GB_PARAMS.get( setting, None ) is None:
@@ -1203,7 +1220,7 @@ def Main( args ):
         if os.path.exists(lockfile_path):
             Logger.log('Lockfile was present on run')
                 
-            raise RuntimeError( 'Someone is running this already OR'
+            raise RuntimeError('Someone is running this already OR'
                 ' there was an error in the previous run')
 
         else:
@@ -1250,7 +1267,7 @@ if __name__ == '__main__':
                         WindowClass='main',
                         sectionID='WgMlstStrainNaming',
                         commandID='assign_wgst',
-                        caption='Assign WGS Codes',
+                        caption='Assign Allele Codes',
                         description='Assign WGS Codes',
                         execute=Main
         )
