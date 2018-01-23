@@ -179,12 +179,10 @@ class Tree( object ):
 
     def BuildTree( self ):
         lengthMismatch = 0
-        non_existant_keys = set()
 
         for key, address in self._names.items():
 
             if not self.check_bns_key(key):
-                non_existant_keys.add(key)
                 continue
 
             if len( address ) == Tree.DEPTH:
@@ -214,10 +212,8 @@ class Tree( object ):
                 lengthMismatch += len( address )
 
         if lengthMismatch > 0:
-            pass
-
-        for key in non_existant_keys:
-            self.RemoveNamed(key)
+            raise RuntimeError('Saved partial names instead'
+                ' fatal error!')
 
     def check_bns_key(self, key):
         return bns.Database.Entry(key).DispName != '<Not present>'
@@ -1268,7 +1264,7 @@ if __name__ == '__main__':
                         sectionID='WgMlstStrainNaming',
                         commandID='assign_wgst',
                         caption='Assign Allele Codes',
-                        description='Assign WGS Codes',
+                        description='Assign Allele Codes',
                         execute=Main
         )
 
