@@ -98,7 +98,7 @@ class Logger(object):
 
         else:
             return '->{}'.format(''.join(
-                ['\t']*depth) + string)
+                ['\t']*depth) + string + '\n')
 
     def _log(self, outstr, depth):
         self._filehandle.write(
