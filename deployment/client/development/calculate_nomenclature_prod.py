@@ -741,7 +741,7 @@ class Calculator(object):
         comm.SetMessage( 'Calculating and assigning WGS codes' )
         
         Logger.log('Beginning calculation at {}'.format(
-            datetime.now().strftime('%H-%M-%S')))
+            datetime.now().strftime('%I:%M:%S %p')))
         
         nSelected = len( Database.Db.Selection )
         for i, entry in enumerate( Database.Db.Selection ):
