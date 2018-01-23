@@ -20,6 +20,7 @@ import traceback
 
 from datetime import datetime, date
 from collections import defaultdict
+from functools import partial
 
 # External imports
 import numpy as np
@@ -642,8 +643,7 @@ class Calculator(object):
         except:
             e = traceback.format_exc()
             Logger.log(e)
-            MessageBox('', 'There was an error', '')
-            bns.Stop()
+            MessageBox('Error', 'There was an error, please check the log file', '')
 
         else:
             os.remove(lockfile_path)
@@ -925,7 +925,7 @@ class Calculator(object):
                     self._tree.Save( f )
         
         # Inform the user
-        MessageBox('', 'Successfully assigned WGS Codes', '')
+        MessageBox('Success', 'Successfully assigned WGS Codes', '')
 
         # Open the file if there is a no save:
         if GB_PARAMS['nosave']:
@@ -1028,7 +1028,7 @@ def Setup( **kwargs ):
 
         else:
 
-            Logger.log( 'Did not find settings, using default')
+            Logger.log('Did not find settings, using default')
 
             # Check to make sure the field exists:
             if len( Fields ) < 1:
@@ -1096,7 +1096,7 @@ def Setup( **kwargs ):
 
         Logger.log('Sucessfully validated directories')
 
-    def ValidateSrcFiles():
+    def ValidateSrcFiles(RUNTIME_ARGS):
 
         def Backup( path ):
 
@@ -1121,10 +1121,10 @@ def Setup( **kwargs ):
                 OUT_FILE = os.path.join( path, os.path.basename( PATH_FILES[0] ))
 
                 # Back, back, back it up!
-                Logger.log( 'Writing to disk' )
+                Logger.log('Writing to disk')
                 
                 # This is cheating, but it works for now
-                if IN_FILE.endswith( '.gzip' ):
+                if IN_FILE.endswith('.gzip'):
 
                     with gzip.open( IN_FILE, 'rb' ) as f_in, \
                             gzip.open( OUT_FILE, 'wb') as f_out:
@@ -1173,19 +1173,46 @@ def Setup( **kwargs ):
                 RUNTIME_ARGS['dirpath'], 'allele_calls' )
         }
 
+        # bns window id:
+        bnswinid = 1
+        totalfiles = float(len(files))
+        winobj = bns.Windows.BnsWindow(bnswinid)
+
         # For each file, back it up
+        i=0
         for file, path in files.items():
             
             Logger.log('Backing up if possible: {}'.format( path ) )
 
+            # Set the progress
+            winobj.SetProgressbar(
+                int(i/totalfiles*100.),
+                'Backing up: {}'.format(path)
+                )
+
             # Set the runtime arguments
             RUNTIME_ARGS[file] = Backup( path )
 
+            # Update progress:
+            i+=1
+            winobj.SetProgressbar(
+                int(i/totalfiles*100.),
+                'Backed up: {}'.format(path)
+                )
+
+        winobj.SetProgressbar(-1, '')            
+
+
+        return RUNTIME_ARGS
+
     SearchSettings()
     ValidateDirectories()
-    ValidateSrcFiles()
+    # ValidateSrcFiles()
 
-    return RUNTIME_ARGS
+    # Create a backup function to be run after the dialog box runs
+    backup_function = partial(ValidateSrcFiles, RUNTIME_ARGS)
+
+    return backup_function
 
 def Run( runtimeArgs ):
 
@@ -1224,23 +1251,25 @@ def Main( args ):
                 pass
 
         # Let's set ourselves up for success!
-        runtimeArgs = Setup()
+        backupfnc = Setup()
+        # runtimeArgs = Setup()
 
         # Let's make the dialog box:
         DialogBox = WgstDlg()
         if not DialogBox.Show():
-            bns.Stop()
+            os.remove(lockfile_path)
 
-        # Start the calculation
-        Run( runtimeArgs )
+        else:
+            runtimeArgs = backupfnc()
+            
+            # Start the calculation
+            Run(runtimeArgs)
 
     except:
         e = traceback.format_exc()
         Logger.log( e )
-        MessageBox( 'Error', e, '' )
+        MessageBox( 'Error', 'There was an error, please check the log file', '' )
         Logger.close()
-
-
 
 if __name__ == '__main__':
 
