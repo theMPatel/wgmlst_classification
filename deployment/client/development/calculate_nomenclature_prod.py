@@ -748,6 +748,9 @@ class Calculator(object):
             
             comm.SetProgress( i, nSelected )
 
+            Logger.log('Trying to add entry: {}'.format(
+                entry.Key), depth=1)
+
             # Let's get the experiment
             entryExper = Database.Experiment( entry, 
                 GB_PARAMS['wgmlstname'] )
@@ -762,6 +765,8 @@ class Calculator(object):
             # Let's skip if it doesn't have allele calls
             if not entryExper.IsPresent() or \
                 not qualityExper.IsPresent():
+
+                Logger.log('Missing wgMLST or quality data', depth=2)
                 continue
 
             qcFail = False
@@ -799,6 +804,9 @@ class Calculator(object):
 
                 continue
 
+
+            Logger.log('Performing QC...', depth=2)
+
             # Check sequence length:
             seqLen = CheckLength( qualityExper )
 
@@ -816,13 +824,20 @@ class Calculator(object):
 
             if qcFail:
                 continue
+                Logger.log('Entry failed QC', depth=3)
             else:
                 self._alleleCalls.Add( entry.Key , eCalls )
+                Logger.log('Passed QC', depth=3)
 
+            Logger.log('Calculating distances...', depth=2)
             # Get the distances
             dists = [GetDistance( eCalls, self._alleleCalls.GetCalls(named) ) \
                         for named in namedEntries ]
 
+            Logger.log('Calculated distances!', depth=3)
+
+
+            Logger.log('Assigning name...', depth=2)
             # Calculate tree
             self._tree = CalcName(namedEntries, self._tree, entry.Key,
                                     dists, self._thresholds)
@@ -830,6 +845,7 @@ class Calculator(object):
             # Keep track of our new data
             if self._tree.HasName( entry.Key ):
                 namedEntries.append( entry.Key )
+                Logger.log('Successfully assigned name!', depth=3)
 
         if GB_PARAMS['nosave']:
             
@@ -924,9 +940,6 @@ class Calculator(object):
                 with open( FILE_PATH, 'wb' ) as f:
                     self._tree.Save( f )
         
-        # Inform the user
-        MessageBox('Success', 'Successfully assigned WGS Codes', '')
-
         # Open the file if there is a no save:
         if GB_PARAMS['nosave']:
             os.startfile( FILE_PATH )
