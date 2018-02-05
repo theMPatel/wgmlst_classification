@@ -181,9 +181,12 @@ class Tree( object ):
     def BuildTree( self ):
         lengthMismatch = 0
 
+        keys_to_remove = set()
+
         for key, address in self._names.items():
 
             if not self.check_bns_key(key):
+                keys_to_remove.add(key)
                 continue
 
             if len( address ) == Tree.DEPTH:
@@ -215,6 +218,12 @@ class Tree( object ):
         if lengthMismatch > 0:
             raise RuntimeError('Saved partial names instead'
                 ' fatal error!')
+
+        for key in keys_to_remove:
+            if key in self._names:
+                del self._names[key]
+
+        return keys_to_remove
 
     def check_bns_key(self, key):
         return bns.Database.Entry(key).DispName != '<Not present>'
@@ -526,6 +535,11 @@ class AlleleCalls( object ):
     def HasKey( self, key ):
         return key in self._alleleCalls
 
+    def Prune(self, keys):
+        for key in keys:
+            if key in self._alleleCalls:
+                del self._alleleCalls[key]
+
     def __len__(self):
         return len( self._alleleCalls )
 
@@ -728,9 +742,25 @@ class Calculator(object):
 
         # Build the tree
         comm.SetMessage( "Building tree" )
+        
         Logger.log('Building tree')
-        self._tree.BuildTree()
+        
+        allele_calls_rm = self._tree.BuildTree()
+        
         Logger.log('Built tree', depth=1)
+
+        if len(allele_calls_rm):
+
+            Logger.log('Found {} entries that do not exist'
+                ' in the database'.format(str(len(allele_calls_rm))), depth=2)
+
+            # Removing allele calls that are no longer in the db
+            Logger.log('Deleting non-existant keys...', depth=1)
+
+            self._alleleCalls.Prune(allele_calls_rm)
+
+            Logger.log('Successfully removed {} keys'.format(
+                str(len(allele_calls_rm))), depth=2)
 
         # Get all the current names
         namedEntries = list( self._tree.GetNames() )
@@ -778,7 +808,7 @@ class Calculator(object):
 
                     if not seqQC:
                         Logger.log(
-                            'Entry: {} has WGS code, but does not '
+                            'Entry: {} has Allele code, but does not '
                             'have an acceptable sequence length'.format(
                                 entry.Key ))
 
@@ -793,7 +823,7 @@ class Calculator(object):
                             self._alleleCalls.Add( key, eCalls )
                         else:
                             Logger.log(
-                                'Entry: {} has WGS code, but is below'
+                                'Entry: {} has Allele code, but is below'
                                 'the {} presence cutoff'.format( 
                                                     entry.Key, self._minPres ))
 
@@ -801,6 +831,8 @@ class Calculator(object):
                         #         entry.Key ))
 
                         # self._tree.RemoveNamed( entry.Key )
+
+                Logger.log('This entry has a name, skipping...', depth=1)
 
                 continue
 
