@@ -1227,7 +1227,7 @@ def Setup( **kwargs ):
 
     return backup_function
 
-def Run( runtimeArgs ):
+def Run( runtimeArgs, debug ):
 
     # The main window
     winID = 1
@@ -1235,11 +1235,15 @@ def Run( runtimeArgs ):
     # If we are here, we are ready to issue WGS codes
     calc = Calculator( runtimeArgs )
 
-    # Run the calculation
-    bns.Windows.BnsWindow(winID).StartAsyncCalculation(
-            calc.RunCalc, calc.DoRefresh, async=False )
+    if debug:
+        calc.RunCalc({})
 
-def Main( args ):
+    else:
+        # Run the calculation
+        bns.Windows.BnsWindow(winID).StartAsyncCalculation(
+                calc.RunCalc, calc.DoRefresh, async=False )
+
+def Main( args, debug=False ):
 
     # The logger!!
     Logger(DATA_DIR)
@@ -1276,7 +1280,7 @@ def Main( args ):
             runtimeArgs = backupfnc()
             
             # Start the calculation
-            Run(runtimeArgs)
+            Run(runtimeArgs, debug)
 
     except:
         e = traceback.format_exc()
@@ -1328,3 +1332,7 @@ if __name__ == '__main__':
         # )
     except Exception:
         pass
+
+
+if __name__ == '__main__' and __bnsdebug__:
+    Main({}, debug=True)
